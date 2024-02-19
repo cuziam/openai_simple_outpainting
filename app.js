@@ -1,10 +1,10 @@
-// Code to use OpenAI's DALL-E 2 model to edit an image
-require("dotenv").config(); // Load .env file
-const { default: axios } = require("axios");
+require("dotenv").config();
 const fs = require("fs");
-const OpenAi = require("openai");
-const openai = new OpenAi(process.env.OPENAI_API_KEY);
 const sharp = require("sharp");
+const axios = require("axios").default;
+const OpenAi = require("openai");
+const readline = require("readline");
+const openai = new OpenAi(process.env.OPENAI_API_KEY);
 
 // before running this code, check the following:
 // 1. source image and mask image must have same resolution
@@ -12,202 +12,175 @@ const sharp = require("sharp");
 // 3. check file names and folder names(src, rgba, dest) are correct.
 // 4. check package.json file has all the required packages.
 
-const yourRequestConfig = {
-  srcImageName: "src.png", //source image file name
-  maskImageName: "mask.png", //mask image file name
-  theNumberOfImages: 2, //the number of images you want to get
-  yourPrompt: "", //type your prompt here
+// change the config object according to your needs
+const config = {
+  srcImageName: "src.png",
+  maskImageName: "mask.png",
+  theNumberOfImages: 1,
+  yourPrompt:
+    "the illustration of the silhouettes of men and women dancing under the moon at night", // type your prompt here
+  srcFolderPath: "./src",
+  rgbaFolderPath: "./rgba",
+  destFolderPath: "./dest",
 };
 
-//-----------------you don't need to modify below this line-----------------//
-const srcImagePath = `./src/${yourRequestConfig.srcImageName}`;
-const maskImagePath = `./src/${yourRequestConfig.maskImageName}`;
+//----------------you don't need to change anything below this line-------------------
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
 
-const rgbaSrcImagePath = `./rgba/_${srcImageName}`;
-const rgbaMaskImagePath = `./rgba/_${maskImageName}`;
-
-const destFolderPath = "./dest";
-
-//main function
-async function imageProcessing() {
-  //1. source image to rgba
-  await sharp(srcImagePath)
-    .ensureAlpha()
-    .toFormat("png")
-    .toFile(rgbaSrcImagePath)
-    .then(() => {
-      console.log("src image to rgba done");
-    })
-    .catch((err) => {
-      console.log(err);
-    });
-
-  //2. mask image to rgba
-  await sharp(maskImagePath)
-    .ensureAlpha()
-    .toFormat("png")
-    .toFile(rgbaMaskImagePath)
-    .then(() => {
-      console.log("mask image to rgba done");
-    })
-    .catch((err) => {
-      console.log(err);
-    });
-
-  //3. send images to openai
-  console.log(
-    "sending images to openai... waiting for urls from openai...(it will take a few seconds)"
-  );
+async function convertImageToRgba(imagePath, outputPath) {
   try {
-    const image = await openai.images.edit({
-      model: "dall-e-2",
-      n: yourRequestConfig.theNumberOfImages,
-      image: fs.createReadStream(rgbaSrcImagePath),
-      mask: fs.createReadStream(rgbaMaskImagePath),
-      prompt: yourRequestConfig.yourPrompt, //type your prompt here
-    });
+    await sharp(imagePath).ensureAlpha().toFormat("png").toFile(outputPath);
+    console.log(`${imagePath} converted to RGBA`);
   } catch (err) {
-    console.log(err);
+    console.error(`Error converting ${imagePath} to RGBA: ${err}`);
+    throw err;
   }
-
-  image.data.forEach((data, idx) =>
-    console.log(`image ${idx + 1}: ${data.url}`)
-  );
-
-  //4. download images
-  image.data.forEach(async (data, idx) => {
-    const url = data.url;
-    const filename = `${Date.now()}_dest_${idx + 1}.png`; //the filename of the image to be saved
-    await axios({
-      url,
-      responseType: "stream",
-    })
-      .then((response) => {
-        response.data.pipe(
-          fs.createWriteStream(`${destFolderPath}/${filename}`)
-        );
-        response.data.on("end", () => {
-          console.log(`image ${idx + 1} downloaded successfully!`);
-        });
-      })
-      .catch((err) => {
-        console.log(`image ${idx + 1} download failed\n${err}`);
-      });
-  });
 }
 
-class basicValidation {
-  constructor() {}
+async function downloadAndSaveImage(url, filename) {
+  try {
+    const response = await axios({ url, responseType: "stream" });
+    const stream = response.data.pipe(fs.createWriteStream(filename));
+    return new Promise((resolve, reject) => {
+      stream.on("finish", resolve);
+      stream.on("error", reject);
+    });
+  } catch (err) {
+    console.error(`Error downloading ${url}: ${err}`);
+    throw err;
+  }
+}
+
+function checkAndCreateFolder(folderPath) {
+  if (!fs.existsSync(folderPath)) {
+    fs.mkdirSync(folderPath);
+    console.log(`${folderPath} folder created`);
+  }
+}
+
+async function processImagesWithOpenAi(srcImage, maskImage, prompt, n) {
+  console.log(
+    "Sending images to OpenAi and waiting for response...(it will take a few seconds)"
+  );
+  try {
+    const response = await openai.images.edit({
+      model: "dall-e-2",
+      n,
+      image: fs.createReadStream(srcImage),
+      mask: fs.createReadStream(maskImage),
+      prompt,
+    });
+    return response.data;
+  } catch (err) {
+    console.error(`Error sending images to OpenAI: ${err}`);
+    throw err;
+  }
+}
+
+class BasicValidation {
+  async isImagesHaveSameResolution() {
+    const srcImage = sharp(`${config.srcFolderPath}/${config.srcImageName}`);
+    const maskImage = sharp(`${config.srcFolderPath}/${config.maskImageName}`);
+    const srcMetadata = await srcImage.metadata();
+    const maskMetadata = await maskImage.metadata();
+    if (
+      srcMetadata.width !== maskMetadata.width ||
+      srcMetadata.height !== maskMetadata.height
+    ) {
+      throw new Error(
+        "Source image and mask image do not have the same resolution"
+      );
+    }
+  }
+
   isEnv() {
     if (!process.env.OPENAI_API_KEY) {
-      console.log("OpenAI API key not found in .env file");
-      return false;
+      throw new Error("OpenAI API key not found in .env file");
     }
-    return true;
   }
+
   isImagesExist() {
-    if (!fs.existsSync(srcImagePath)) {
-      console.log("src image or mask image does not exist");
-      return false;
-    }
-    if (!fs.existsSync(maskImagePath)) {
-      console.log("mask image does not exist");
-      return false;
-    }
-  }
-  isImagesHaveSameResolution() {
-    const srcImage = sharp(srcImagePath);
-    const maskImage = sharp(maskImagePath);
-    const srcImageMetadata = srcImage.metadata();
-    const maskImageMetadata = maskImage.metadata();
     if (
-      srcImageMetadata.width === maskImageMetadata.width &&
-      srcImageMetadata.height === maskImageMetadata.height
+      !fs.existsSync(`${config.srcFolderPath}/${config.srcImageName}`) ||
+      !fs.existsSync(`${config.srcFolderPath}/${config.maskImageName}`)
     ) {
-      return true;
+      throw new Error("Source or mask image does not exist");
     }
-    console.log("source image and mask image do not have same resolution");
-    return false;
   }
 
   isRgbaFolderExist() {
-    if (!fs.existsSync("./rgba")) {
-      console.log(
-        "rgba folder does not exist in the current directory so creating one..."
-      );
-      try {
-        fs.mkdirSync("./rgba");
-        return true;
-      } catch (err) {
-        console.log(err);
-        return false;
-      }
-    }
+    checkAndCreateFolder(config.rgbaFolderPath);
   }
+
   isDestFolderExist() {
-    if (!fs.existsSync(destFolderPath)) {
-      console.log(
-        "dest folder does not exist in the current directory so creating one..."
-      );
-      try {
-        fs.mkdirSync(destFolderPath);
-        return true;
-      } catch (err) {
-        console.log(err);
-        return false;
-      }
-    }
+    checkAndCreateFolder(config.destFolderPath);
   }
 }
 
-async function main() {
-  console.log("main function started");
-  console.log("checking the environment...");
-  const validation = new basicValidation();
-  //main function
-  if (
-    validation.isEnv() &&
-    validation.isImagesExist() &&
-    validation.isImagesHaveSameResolution() &&
-    validation.isRgbaFolderExist() &&
-    validation.isDestFolderExist()
-  ) {
-    console.log("environment check complete");
-    console.log("Do you want image processing? (y/n)");
-    process.stdin.resume();
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", function (text) {
-      //delete carriage return (for windows users)
-      text = text.replace("\r", "");
-      if (text === "n\n") {
-        console.log("program terminated");
-        process.exit();
-      } else if (text === "y\n") {
-        console.log("image processing started");
-        imageProcessing();
+async function validateEnvironment() {
+  const validation = new BasicValidation();
+  validation.isEnv();
+  validation.isImagesExist();
+  await validation.isImagesHaveSameResolution();
+  validation.isRgbaFolderExist();
+  validation.isDestFolderExist();
+}
+
+//core functions
+async function imageProcessing() {
+  try {
+    await validateEnvironment();
+    console.log("Environment validated successfully.");
+
+    const rgbaSrcImagePath = `${config.rgbaFolderPath}/_${config.srcImageName}`;
+    const rgbaMaskImagePath = `${config.rgbaFolderPath}/_${config.maskImageName}`;
+
+    await convertImageToRgba(
+      `${config.srcFolderPath}/${config.srcImageName}`,
+      rgbaSrcImagePath
+    );
+    await convertImageToRgba(
+      `${config.srcFolderPath}/${config.maskImageName}`,
+      rgbaMaskImagePath
+    );
+
+    const imagesData = await processImagesWithOpenAi(
+      rgbaSrcImagePath,
+      rgbaMaskImagePath,
+      config.yourPrompt,
+      config.theNumberOfImages
+    );
+
+    for (const [idx, data] of imagesData.entries()) {
+      const filename = `${config.destFolderPath}/${Date.now()}_dest_${
+        idx + 1
+      }.png`;
+      await downloadAndSaveImage(data.url, filename);
+      console.log(`Image ${idx + 1} downloaded successfully!`);
+    }
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    return; // Error occurred, exit the main function
+  }
+}
+
+function askUser() {
+  rl.question(
+    "Do you want to start processing images? (y/n): ",
+    function (answer) {
+      if (answer.toLowerCase() === "y") {
+        imageProcessing().then(() => {
+          askUser(); // ask again
+        });
       } else {
-        console.log("please type y or n");
+        console.log("Program terminated.");
+        rl.close(); // close the readline interface
       }
-    });
-  }
+    }
+  );
 }
 
-main().then(() => {
-  //ask to user if they want to process the image again
-  console.log("Do you want image processing again? (y/n)");
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", function (text) {
-    //delete carriage return (for windows users)
-    text = text.replace("\r", "");
-    if (text === "n\n") {
-      console.log("program terminated");
-      process.exit();
-    } else if (text === "y\n") {
-      console.log("image processing started again");
-      main();
-    } else {
-      console.log("please type y or n");
-    }
-  });
-});
+askUser(); // start the program
